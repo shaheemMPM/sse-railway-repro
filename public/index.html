@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SSE Railway Repro</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: system-ui, sans-serif; padding: 32px; max-width: 800px; margin: 0 auto; background: #f8f9fa; }
+    h1 { margin-bottom: 8px; }
+    p.subtitle { color: #666; margin-bottom: 24px; }
+    .controls { display: flex; gap: 12px; align-items: end; flex-wrap: wrap; margin-bottom: 24px; }
+    .field { display: flex; flex-direction: column; gap: 4px; }
+    .field label { font-size: 13px; font-weight: 500; color: #444; }
+    .field input { padding: 8px 12px; border: 1px solid #ccc; border-radius: 6px; width: 120px; font-size: 14px; }
+    button { padding: 8px 20px; border: none; border-radius: 6px; font-size: 14px; font-weight: 500; cursor: pointer; }
+    button.primary { background: #2c2c2c; color: #fff; }
+    button.primary:hover { background: #444; }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+    #log { background: #1a1a2e; color: #e0e0e0; border-radius: 8px; padding: 16px; font-family: "SF Mono", Monaco, Consolas, monospace; font-size: 13px; line-height: 1.6; min-height: 300px; max-height: 500px; overflow-y: auto; white-space: pre-wrap; word-break: break-all; }
+    .ev-init { color: #60a5fa; }
+    .ev-preview { color: #34d399; }
+    .ev-complete { color: #a78bfa; }
+    .ev-error { color: #f87171; }
+    .ev-info { color: #9ca3af; }
+    .result { margin-top: 16px; padding: 16px; border-radius: 8px; font-weight: 500; }
+    .result.pass { background: #d1fae5; color: #065f46; }
+    .result.fail { background: #fee2e2; color: #991b1b; }
+  </style>
+</head>
+<body>
+  <h1>SSE Proxy Repro Test</h1>
+  <p class="subtitle">Tests whether the SSE "complete" event survives the proxy chain.</p>
+
+  <div class="controls">
+    <div class="field">
+      <label>Payload size (KB)</label>
+      <input type="number" id="sizeKb" value="250" min="1" max="2000">
+    </div>
+    <div class="field">
+      <label>Delay before close (ms)</label>
+      <input type="number" id="delay" value="0" min="0" max="5000">
+    </div>
+    <button class="primary" id="runBtn" onclick="runTest()">Run Test</button>
+  </div>
+
+  <div id="log"></div>
+  <div id="result"></div>
+
+  <script>
+    const logEl = document.getElementById("log");
+    const resultEl = document.getElementById("result");
+    const runBtn = document.getElementById("runBtn");
+
+    function log(text, cls = "ev-info") {
+      const time = new Date().toISOString().split("T")[1].replace("Z", "");
+      logEl.innerHTML += `<span class="${cls}">[${time}] ${text}</span>\n`;
+      logEl.scrollTop = logEl.scrollHeight;
+    }
+
+    function showResult(pass, message) {
+      resultEl.className = `result ${pass ? "pass" : "fail"}`;
+      resultEl.textContent = message;
+    }
+
+    function runTest() {
+      // Reset
+      logEl.innerHTML = "";
+      resultEl.className = "";
+      resultEl.textContent = "";
+      runBtn.disabled = true;
+
+      const sizeKb = document.getElementById("sizeKb").value;
+      const delay = document.getElementById("delay").value;
+
+      const events = { init: false, preview: false, complete: false };
+      let previewSizeBytes = 0;
+
+      const url = `/stream?sizeKb=${sizeKb}&delay=${delay}`;
+      log(`Opening EventSource: ${url}`);
+
+      const es = new EventSource(url);
+
+      es.addEventListener("init", (e) => {
+        events.init = true;
+        const data = JSON.parse(e.data);
+        log(`EVENT init  — total: ${data.total}`, "ev-init");
+      });
+
+      es.addEventListener("preview", (e) => {
+        events.preview = true;
+        previewSizeBytes = e.data.length;
+        const data = JSON.parse(e.data);
+        const htmlSizeKb = (data.html.length / 1024).toFixed(1);
+        log(`EVENT preview — orderId: ${data.orderId}, html: ${htmlSizeKb} KB`, "ev-preview");
+      });
+
+      es.addEventListener("complete", (e) => {
+        events.complete = true;
+        log(`EVENT complete — ${e.data}`, "ev-complete");
+        es.close();
+        finish();
+      });
+
+      es.addEventListener("error", (e) => {
+        const me = e;
+        if (me.data) {
+          log(`EVENT error (server) — ${me.data}`, "ev-error");
+        } else {
+          log(`CONNECTION ERROR — readyState: ${es.readyState}`, "ev-error");
+          if (es.readyState === EventSource.CLOSED) {
+            es.close();
+            finish();
+          }
+        }
+      });
+
+      es.onerror = () => {
+        if (es.readyState === EventSource.CLOSED) {
+          log(`onerror — connection closed (readyState: CLOSED)`, "ev-error");
+          finish();
+        }
+      };
+
+      let finished = false;
+      function finish() {
+        if (finished) return;
+        finished = true;
+        runBtn.disabled = false;
+
+        log("");
+        log("--- Summary ---");
+        log(`init:     ${events.init ? "received" : "MISSING"}`, events.init ? "ev-init" : "ev-error");
+        log(`preview:  ${events.preview ? "received" : "MISSING"} (${(previewSizeBytes / 1024).toFixed(1)} KB)`, events.preview ? "ev-preview" : "ev-error");
+        log(`complete: ${events.complete ? "received" : "MISSING"}`, events.complete ? "ev-complete" : "ev-error");
+
+        if (events.init && events.preview && events.complete) {
+          showResult(true, "PASS — All events received. Proxy forwarded everything correctly.");
+        } else if (events.preview && !events.complete) {
+          showResult(false, "FAIL — Preview received but 'complete' event was lost. This confirms the proxy is dropping the final SSE event.");
+        } else {
+          showResult(false, `FAIL — Missing events: ${Object.entries(events).filter(([,v]) => !v).map(([k]) => k).join(", ")}`);
+        }
+      }
+
+      // Safety timeout
+      setTimeout(() => {
+        if (!finished) {
+          log("TIMEOUT — no completion after 30s", "ev-error");
+          es.close();
+          finish();
+        }
+      }, 30000);
+    }
+  </script>
+</body>
+</html>

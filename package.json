@@ -1,0 +1,22 @@
+{
+	"name": "sse-railway-repro",
+	"version": "1.0.0",
+	"description": "Minimal repro: SSE complete event lost through Railway proxy",
+	"scripts": {
+		"build": "nest build",
+		"start": "node dist/main.js",
+		"dev": "nest start --watch"
+	},
+	"dependencies": {
+		"@nestjs/common": "^10.3.9",
+		"@nestjs/core": "^10.3.9",
+		"@nestjs/platform-express": "^10.3.9",
+		"reflect-metadata": "^0.1.13",
+		"rxjs": "^7.2.0"
+	},
+	"devDependencies": {
+		"@nestjs/cli": "^10.3.2",
+		"@types/node": "^25.5.0",
+		"typescript": "^4.7.4"
+	}
+}
