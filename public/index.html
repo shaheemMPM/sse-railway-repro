@@ -33,7 +33,7 @@
   <h2>The Problem</h2>
   <p>
     When a NestJS app deployed on Railway sends SSE (Server-Sent Events) responses,
-    events are silently dropped by Railway's proxy layer (Fastly CDN) when the
+    events are silently dropped by Railway's proxy layer when the
     stream is closed immediately after sending a large event (~250KB+).
     The proxy drops any buffered data that hasn't been flushed to the client
     when it receives the upstream TCP FIN.
@@ -74,7 +74,7 @@ event: complete    ~50 bytes    &#x2718; LOST     (stream closed immediately aft
     <li>NestJS 10.3.9 with <code>@Sse()</code> decorator</li>
     <li>RxJS Subject piped as Observable</li>
     <li>Railway deployment with Railpack builder</li>
-    <li>Response headers show: <code>x-railway-cdn-edge: fastly/...</code></li>
+    <li>Response headers include: <code>x-railway-cdn-edge</code>, <code>x-served-by</code></li>
   </ul>
 
   <hr>
