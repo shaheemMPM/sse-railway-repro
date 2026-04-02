@@ -182,7 +182,12 @@
         const data = JSON.parse(e.data);
         log(`DONE — server emitted all ${data.totalSent} messages + done sentinel`, "ev-done");
         if (close) {
-          // Stream will close, wait for it
+          // Stream will close — the server calls subject.complete() which
+          // triggers response.end(). The browser will fire a connection error
+          // as the SSE connection drops. Since we already have all data,
+          // finish now and ignore the upcoming error.
+          es.close();
+          finish();
         } else {
           // Stream stays open, we have our answer
           es.close();
@@ -191,6 +196,7 @@
       });
 
       es.addEventListener("error", (e) => {
+        if (finished) return;
         const me = e;
         if (me.data) {
           log(`ERROR (server) — ${me.data}`, "ev-error");
