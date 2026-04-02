@@ -61,9 +61,9 @@ event: complete    ~50 bytes    &#x2718; LOST     (stream closed immediately aft
   <h2>Key observations</h2>
   <ul>
     <li>Adding a <strong>500ms delay</strong> before closing the stream makes all events arrive</li>
-    <li><strong>Without close</strong>: 250KB &rarr; 1KB messages both arrive (PASS)</li>
-    <li><strong>With close</strong>: 250KB arrives, 1KB is lost (FAIL)</li>
-    <li>Small payloads (~10KB) don't trigger the issue — only large ones (~250KB+)</li>
+    <li><strong>Without close</strong>: events after a large write arrive fine (PASS)</li>
+    <li><strong>With close</strong>: events buffered behind a large write are lost (FAIL)</li>
+    <li>Only triggered by large writes (~250KB+) — small payloads close cleanly</li>
     <li>The issue is 100% reproducible, not intermittent</li>
     <li>The NestJS <code>@Sse()</code> decorator correctly sets <code>X-Accel-Buffering: no</code>,
         <code>Cache-Control: no-transform</code>, and <code>Connection: keep-alive</code></li>
