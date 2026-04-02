@@ -51,7 +51,8 @@
 <body>
   <h1>SSE Message Sequence Test</h1>
   <p class="subtitle">
-    Tests whether small SSE events arrive after large ones — independent of connection close.
+    Tests whether small SSE events arrive after large ones. Toggle "Close stream" to compare:
+    without close, all messages arrive. With close, messages after a large one are lost.
     <br>Configure a sequence of messages with sizes and delays, then observe which ones arrive.
     <br><a href="/">&larr; Back</a>
   </p>

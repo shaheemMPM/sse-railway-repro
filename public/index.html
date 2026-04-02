@@ -33,24 +33,36 @@
   <h2>The Problem</h2>
   <p>
     When a NestJS app deployed on Railway sends SSE (Server-Sent Events) responses,
-    events can be silently dropped by Railway's proxy layer (Fastly CDN).
-    This happens when a small SSE event is sent immediately after a large one (~250KB+),
-    and the stream is closed shortly after.
+    events are silently dropped by Railway's proxy layer (Fastly CDN) when the
+    stream is closed immediately after sending a large event (~250KB+).
+    The proxy drops any buffered data that hasn't been flushed to the client
+    when it receives the upstream TCP FIN.
   </p>
 
   <h2>What gets dropped</h2>
-  <p>The server sends three SSE events in sequence:</p>
+  <p>The server sends three SSE events then closes the stream:</p>
   <pre>event: init        ~50 bytes    &#x2714; received
 event: preview     ~250 KB      &#x2714; received
-event: complete    ~50 bytes    &#x2718; LOST</pre>
+event: complete    ~50 bytes    &#x2718; LOST     (stream closed immediately after)</pre>
   <p>
     The <code>complete</code> event never reaches the client. The connection errors out instead.
     This does <strong>not</strong> happen when running locally — only through Railway's proxy.
   </p>
 
+  <h2>Root cause: close race, not buffering</h2>
+  <p>
+    Testing confirmed this is <strong>not</strong> a general SSE buffering issue.
+    When the stream stays open (no close), small events arrive fine after large ones.
+    The issue only occurs when <code>response.end()</code> (TCP FIN) is sent
+    immediately after a large write — the proxy closes the downstream connection
+    before flushing all buffered data.
+  </p>
+
   <h2>Key observations</h2>
   <ul>
     <li>Adding a <strong>500ms delay</strong> before closing the stream makes all events arrive</li>
+    <li><strong>Without close</strong>: 250KB &rarr; 1KB messages both arrive (PASS)</li>
+    <li><strong>With close</strong>: 250KB arrives, 1KB is lost (FAIL)</li>
     <li>Small payloads (~10KB) don't trigger the issue — only large ones (~250KB+)</li>
     <li>The issue is 100% reproducible, not intermittent</li>
     <li>The NestJS <code>@Sse()</code> decorator correctly sets <code>X-Accel-Buffering: no</code>,
@@ -68,18 +80,18 @@ event: complete    ~50 bytes    &#x2718; LOST</pre>
   <hr>
 
   <h2>Tests</h2>
-  <p>Two tests to isolate whether the issue is a close race (FIN vs data) or a general buffering problem:</p>
+  <p>Two tests that isolate the issue to the connection close behavior:</p>
 
   <div class="tests">
     <a href="/test-1" class="test-card">
-      <div class="label label-a">Scenario A</div>
-      <h3>Close Race Test</h3>
-      <p>Sends init + large preview + complete, then immediately closes the stream. Tests if the TCP FIN races with the last event through the proxy.</p>
+      <div class="label label-a">Test 1 — Close Race</div>
+      <h3>Reproduces the bug</h3>
+      <p>Sends init + large preview + complete, then immediately closes the stream. The complete event is consistently lost through Railway's proxy. Adding a delay before close fixes it.</p>
     </a>
     <a href="/test-2" class="test-card">
-      <div class="label label-b">Scenario B</div>
-      <h3>Message Sequence Test</h3>
-      <p>Sends configurable sequences of large/small messages without closing the stream. Tests if small events get lost after large ones mid-stream.</p>
+      <div class="label label-b">Test 2 — Message Sequence</div>
+      <h3>Proves it's not a buffering issue</h3>
+      <p>Sends configurable sequences of large/small messages. Without close: all messages arrive. With close: messages after the large one are lost. Confirms the issue is the FIN racing with buffered data.</p>
     </a>
   </div>
 </body>
