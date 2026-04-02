@@ -3,155 +3,84 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>SSE Railway Repro</title>
+  <title>SSE Event Loss on Railway — Repro</title>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
-    body { font-family: system-ui, sans-serif; padding: 32px; max-width: 800px; margin: 0 auto; background: #f8f9fa; }
-    h1 { margin-bottom: 8px; }
-    p.subtitle { color: #666; margin-bottom: 24px; }
-    .controls { display: flex; gap: 12px; align-items: end; flex-wrap: wrap; margin-bottom: 24px; }
-    .field { display: flex; flex-direction: column; gap: 4px; }
-    .field label { font-size: 13px; font-weight: 500; color: #444; }
-    .field input { padding: 8px 12px; border: 1px solid #ccc; border-radius: 6px; width: 120px; font-size: 14px; }
-    button { padding: 8px 20px; border: none; border-radius: 6px; font-size: 14px; font-weight: 500; cursor: pointer; }
-    button.primary { background: #2c2c2c; color: #fff; }
-    button.primary:hover { background: #444; }
-    button:disabled { opacity: 0.5; cursor: not-allowed; }
-    #log { background: #1a1a2e; color: #e0e0e0; border-radius: 8px; padding: 16px; font-family: "SF Mono", Monaco, Consolas, monospace; font-size: 13px; line-height: 1.6; min-height: 300px; max-height: 500px; overflow-y: auto; white-space: pre-wrap; word-break: break-all; }
-    .ev-init { color: #60a5fa; }
-    .ev-preview { color: #34d399; }
-    .ev-complete { color: #a78bfa; }
-    .ev-error { color: #f87171; }
-    .ev-info { color: #9ca3af; }
-    .result { margin-top: 16px; padding: 16px; border-radius: 8px; font-weight: 500; }
-    .result.pass { background: #d1fae5; color: #065f46; }
-    .result.fail { background: #fee2e2; color: #991b1b; }
+    body { font-family: system-ui, sans-serif; padding: 32px; max-width: 780px; margin: 0 auto; background: #f8f9fa; color: #1a1a1a; line-height: 1.6; }
+    h1 { margin-bottom: 6px; }
+    .tag { display: inline-block; background: #fee2e2; color: #991b1b; font-size: 12px; font-weight: 600; padding: 2px 8px; border-radius: 4px; margin-bottom: 20px; }
+    h2 { margin-top: 28px; margin-bottom: 10px; font-size: 18px; }
+    p { margin-bottom: 12px; color: #333; }
+    code { background: #e8e8e8; padding: 2px 6px; border-radius: 4px; font-size: 13px; }
+    pre { background: #1a1a2e; color: #e0e0e0; border-radius: 8px; padding: 16px; font-size: 13px; overflow-x: auto; margin-bottom: 16px; line-height: 1.5; }
+    ul { margin-bottom: 12px; padding-left: 20px; }
+    li { margin-bottom: 6px; color: #333; }
+    .tests { display: flex; gap: 16px; margin-top: 24px; flex-wrap: wrap; }
+    .test-card { flex: 1; min-width: 280px; background: #fff; border: 1px solid #ddd; border-radius: 10px; padding: 20px; text-decoration: none; color: inherit; transition: border-color 0.15s; }
+    .test-card:hover { border-color: #888; }
+    .test-card h3 { margin-bottom: 6px; font-size: 16px; }
+    .test-card p { font-size: 14px; color: #555; margin: 0; }
+    .test-card .label { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 8px; }
+    .label-a { color: #6366f1; }
+    .label-b { color: #d97706; }
+    hr { border: none; border-top: 1px solid #e0e0e0; margin: 28px 0; }
   </style>
 </head>
 <body>
-  <h1>SSE Proxy Repro Test</h1>
-  <p class="subtitle">Tests whether the SSE "complete" event survives the proxy chain.</p>
+  <h1>SSE Event Loss on Railway</h1>
+  <span class="tag">Bug Repro</span>
 
-  <div class="controls">
-    <div class="field">
-      <label>Payload size (KB)</label>
-      <input type="number" id="sizeKb" value="250" min="1" max="2000">
-    </div>
-    <div class="field">
-      <label>Delay before close (ms)</label>
-      <input type="number" id="delay" value="0" min="0" max="5000">
-    </div>
-    <button class="primary" id="runBtn" onclick="runTest()">Run Test</button>
+  <h2>The Problem</h2>
+  <p>
+    When a NestJS app deployed on Railway sends SSE (Server-Sent Events) responses,
+    events can be silently dropped by Railway's proxy layer (Fastly CDN).
+    This happens when a small SSE event is sent immediately after a large one (~250KB+),
+    and the stream is closed shortly after.
+  </p>
+
+  <h2>What gets dropped</h2>
+  <p>The server sends three SSE events in sequence:</p>
+  <pre>event: init        ~50 bytes    &#x2714; received
+event: preview     ~250 KB      &#x2714; received
+event: complete    ~50 bytes    &#x2718; LOST</pre>
+  <p>
+    The <code>complete</code> event never reaches the client. The connection errors out instead.
+    This does <strong>not</strong> happen when running locally — only through Railway's proxy.
+  </p>
+
+  <h2>Key observations</h2>
+  <ul>
+    <li>Adding a <strong>500ms delay</strong> before closing the stream makes all events arrive</li>
+    <li>Small payloads (~10KB) don't trigger the issue — only large ones (~250KB+)</li>
+    <li>The issue is 100% reproducible, not intermittent</li>
+    <li>The NestJS <code>@Sse()</code> decorator correctly sets <code>X-Accel-Buffering: no</code>,
+        <code>Cache-Control: no-transform</code>, and <code>Connection: keep-alive</code></li>
+  </ul>
+
+  <h2>Environment</h2>
+  <ul>
+    <li>NestJS 10.3.9 with <code>@Sse()</code> decorator</li>
+    <li>RxJS Subject piped as Observable</li>
+    <li>Railway deployment with Railpack builder</li>
+    <li>Response headers show: <code>x-railway-cdn-edge: fastly/...</code></li>
+  </ul>
+
+  <hr>
+
+  <h2>Tests</h2>
+  <p>Two tests to isolate whether the issue is a close race (FIN vs data) or a general buffering problem:</p>
+
+  <div class="tests">
+    <a href="/test-1" class="test-card">
+      <div class="label label-a">Scenario A</div>
+      <h3>Close Race Test</h3>
+      <p>Sends init + large preview + complete, then immediately closes the stream. Tests if the TCP FIN races with the last event through the proxy.</p>
+    </a>
+    <a href="/test-2" class="test-card">
+      <div class="label label-b">Scenario B</div>
+      <h3>Message Sequence Test</h3>
+      <p>Sends configurable sequences of large/small messages without closing the stream. Tests if small events get lost after large ones mid-stream.</p>
+    </a>
   </div>
-
-  <div id="log"></div>
-  <div id="result"></div>
-
-  <script>
-    const logEl = document.getElementById("log");
-    const resultEl = document.getElementById("result");
-    const runBtn = document.getElementById("runBtn");
-
-    function log(text, cls = "ev-info") {
-      const time = new Date().toISOString().split("T")[1].replace("Z", "");
-      logEl.innerHTML += `<span class="${cls}">[${time}] ${text}</span>\n`;
-      logEl.scrollTop = logEl.scrollHeight;
-    }
-
-    function showResult(pass, message) {
-      resultEl.className = `result ${pass ? "pass" : "fail"}`;
-      resultEl.textContent = message;
-    }
-
-    function runTest() {
-      // Reset
-      logEl.innerHTML = "";
-      resultEl.className = "";
-      resultEl.textContent = "";
-      runBtn.disabled = true;
-
-      const sizeKb = document.getElementById("sizeKb").value;
-      const delay = document.getElementById("delay").value;
-
-      const events = { init: false, preview: false, complete: false };
-      let previewSizeBytes = 0;
-
-      const url = `/stream?sizeKb=${sizeKb}&delay=${delay}`;
-      log(`Opening EventSource: ${url}`);
-
-      const es = new EventSource(url);
-
-      es.addEventListener("init", (e) => {
-        events.init = true;
-        const data = JSON.parse(e.data);
-        log(`EVENT init  — total: ${data.total}`, "ev-init");
-      });
-
-      es.addEventListener("preview", (e) => {
-        events.preview = true;
-        previewSizeBytes = e.data.length;
-        const data = JSON.parse(e.data);
-        const htmlSizeKb = (data.html.length / 1024).toFixed(1);
-        log(`EVENT preview — orderId: ${data.orderId}, html: ${htmlSizeKb} KB`, "ev-preview");
-      });
-
-      es.addEventListener("complete", (e) => {
-        events.complete = true;
-        log(`EVENT complete — ${e.data}`, "ev-complete");
-        es.close();
-        finish();
-      });
-
-      es.addEventListener("error", (e) => {
-        const me = e;
-        if (me.data) {
-          log(`EVENT error (server) — ${me.data}`, "ev-error");
-        } else {
-          log(`CONNECTION ERROR — readyState: ${es.readyState}`, "ev-error");
-          if (es.readyState === EventSource.CLOSED) {
-            es.close();
-            finish();
-          }
-        }
-      });
-
-      es.onerror = () => {
-        if (es.readyState === EventSource.CLOSED) {
-          log(`onerror — connection closed (readyState: CLOSED)`, "ev-error");
-          finish();
-        }
-      };
-
-      let finished = false;
-      function finish() {
-        if (finished) return;
-        finished = true;
-        runBtn.disabled = false;
-
-        log("");
-        log("--- Summary ---");
-        log(`init:     ${events.init ? "received" : "MISSING"}`, events.init ? "ev-init" : "ev-error");
-        log(`preview:  ${events.preview ? "received" : "MISSING"} (${(previewSizeBytes / 1024).toFixed(1)} KB)`, events.preview ? "ev-preview" : "ev-error");
-        log(`complete: ${events.complete ? "received" : "MISSING"}`, events.complete ? "ev-complete" : "ev-error");
-
-        if (events.init && events.preview && events.complete) {
-          showResult(true, "PASS — All events received. Proxy forwarded everything correctly.");
-        } else if (events.preview && !events.complete) {
-          showResult(false, "FAIL — Preview received but 'complete' event was lost. This confirms the proxy is dropping the final SSE event.");
-        } else {
-          showResult(false, `FAIL — Missing events: ${Object.entries(events).filter(([,v]) => !v).map(([k]) => k).join(", ")}`);
-        }
-      }
-
-      // Safety timeout
-      setTimeout(() => {
-        if (!finished) {
-          log("TIMEOUT — no completion after 30s", "ev-error");
-          es.close();
-          finish();
-        }
-      }, 30000);
-    }
-  </script>
 </body>
 </html>

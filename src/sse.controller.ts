@@ -1,4 +1,4 @@
-import { Controller, Get, MessageEvent, Query, Sse } from "@nestjs/common";
+import { Controller, MessageEvent, Query, Sse } from "@nestjs/common";
 import { Observable, Subject } from "rxjs";
 
 /**
@@ -91,5 +91,73 @@ export class SseController {
     }
 
     subject.complete();
+  }
+
+  /**
+   * SSE endpoint for custom message sequences.
+   * Sends messages of specified sizes with optional delays between them.
+   * Does NOT close the stream — keeps it open to test if messages arrive
+   * independent of connection close behavior.
+   *
+   * Query params:
+   *   sizes    - comma-separated message sizes in KB (e.g. "250,1,1")
+   *   delays   - comma-separated delays in ms after each message (e.g. "0,0,0")
+   *   close    - whether to close the stream after all messages ("true"/"false", default "false")
+   */
+  @Sse("stream-multi")
+  streamMulti(
+    @Query("sizes") sizes?: string,
+    @Query("delays") delays?: string,
+    @Query("close") close?: string,
+  ): Observable<MessageEvent> {
+    const subject = new Subject<MessageEvent>();
+
+    const sizeList = (sizes || "250,1").split(",").map((s) => parseInt(s, 10));
+    const delayList = (delays || "").split(",").map((s) => parseInt(s, 10) || 0);
+    const shouldClose = close === "true";
+
+    this.processMultiStream(subject, sizeList, delayList, shouldClose);
+
+    return subject.asObservable();
+  }
+
+  private async processMultiStream(
+    subject: Subject<MessageEvent>,
+    sizes: number[],
+    delays: number[],
+    shouldClose: boolean,
+  ) {
+    await new Promise((resolve) => setImmediate(resolve));
+
+    // Send each message in sequence
+    for (let i = 0; i < sizes.length; i++) {
+      const sizeKb = sizes[i];
+      const payload =
+        sizeKb <= 1
+          ? JSON.stringify({ index: i, msg: "small", size: `${sizeKb}KB` })
+          : JSON.stringify({ index: i, html: generateFakeHtml(sizeKb) });
+
+      subject.next({
+        data: payload,
+        type: "msg",
+      } as MessageEvent);
+
+      const delayMs = delays[i] || 0;
+      if (delayMs > 0) {
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
+      }
+    }
+
+    // Send a sentinel event so the client knows all messages were emitted
+    subject.next({
+      data: JSON.stringify({ status: "done", totalSent: sizes.length }),
+      type: "done",
+    } as MessageEvent);
+
+    if (shouldClose) {
+      subject.complete();
+    }
+    // If !shouldClose, stream stays open — client can observe whether
+    // all messages arrived without the close/FIN variable.
   }
 }

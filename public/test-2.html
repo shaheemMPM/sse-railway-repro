@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SSE Message Sequence Test</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: system-ui, sans-serif; padding: 32px; max-width: 900px; margin: 0 auto; background: #f8f9fa; }
+    h1 { margin-bottom: 8px; }
+    p.subtitle { color: #666; margin-bottom: 24px; line-height: 1.5; }
+    a { color: #2c2c2c; }
+
+    .messages-config { margin-bottom: 20px; }
+    .messages-config h3 { margin-bottom: 12px; font-size: 14px; color: #444; }
+
+    .msg-row { display: flex; gap: 10px; align-items: center; margin-bottom: 8px; }
+    .msg-row .index { width: 24px; height: 24px; border-radius: 50%; background: #e0e0e0; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 600; color: #555; flex-shrink: 0; }
+    .msg-row input { padding: 6px 10px; border: 1px solid #ccc; border-radius: 6px; width: 100px; font-size: 13px; }
+    .msg-row label { font-size: 12px; color: #666; width: 70px; text-align: right; flex-shrink: 0; }
+    .msg-row button.remove { background: none; border: 1px solid #ddd; border-radius: 4px; padding: 4px 8px; font-size: 12px; color: #999; cursor: pointer; }
+    .msg-row button.remove:hover { border-color: #f87171; color: #f87171; }
+
+    .add-row { margin-bottom: 16px; }
+    .add-row button { background: #f0f0f0; border: 1px solid #ddd; border-radius: 6px; padding: 6px 14px; font-size: 13px; cursor: pointer; color: #444; }
+    .add-row button:hover { background: #e4e4e4; }
+
+    .options { display: flex; gap: 16px; align-items: center; margin-bottom: 20px; }
+    .options label { font-size: 13px; color: #444; display: flex; align-items: center; gap: 6px; }
+
+    button.primary { padding: 8px 20px; border: none; border-radius: 6px; font-size: 14px; font-weight: 500; cursor: pointer; background: #2c2c2c; color: #fff; }
+    button.primary:hover { background: #444; }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+
+    #log { background: #1a1a2e; color: #e0e0e0; border-radius: 8px; padding: 16px; font-family: "SF Mono", Monaco, Consolas, monospace; font-size: 13px; line-height: 1.6; min-height: 250px; max-height: 450px; overflow-y: auto; white-space: pre-wrap; word-break: break-all; margin-top: 20px; }
+    .ev-msg { color: #34d399; }
+    .ev-done { color: #a78bfa; }
+    .ev-error { color: #f87171; }
+    .ev-info { color: #9ca3af; }
+    .ev-warn { color: #fbbf24; }
+
+    .result { margin-top: 16px; padding: 16px; border-radius: 8px; font-weight: 500; }
+    .result.pass { background: #d1fae5; color: #065f46; }
+    .result.fail { background: #fee2e2; color: #991b1b; }
+
+    .presets { margin-bottom: 20px; display: flex; gap: 8px; flex-wrap: wrap; }
+    .presets button { background: #fff; border: 1px solid #ddd; border-radius: 6px; padding: 6px 12px; font-size: 12px; cursor: pointer; color: #444; }
+    .presets button:hover { border-color: #aaa; }
+  </style>
+</head>
+<body>
+  <h1>SSE Message Sequence Test</h1>
+  <p class="subtitle">
+    Tests whether small SSE events arrive after large ones — independent of connection close.
+    <br>Configure a sequence of messages with sizes and delays, then observe which ones arrive.
+    <br><a href="/">&larr; Back</a>
+  </p>
+
+  <div class="presets">
+    <strong style="font-size:13px;line-height:28px;margin-right:4px;">Presets:</strong>
+    <button onclick="loadPreset('repro')">250KB → 1KB (repro)</button>
+    <button onclick="loadPreset('reverse')">1KB → 250KB</button>
+    <button onclick="loadPreset('sandwich')">1KB → 250KB → 1KB</button>
+    <button onclick="loadPreset('multi-small')">250KB → 1KB → 1KB → 1KB</button>
+    <button onclick="loadPreset('two-large')">250KB → 250KB → 1KB</button>
+  </div>
+
+  <div class="messages-config">
+    <h3>Message Sequence</h3>
+    <div id="msgRows"></div>
+    <div class="add-row">
+      <button onclick="addRow()">+ Add Message</button>
+    </div>
+  </div>
+
+  <div class="options">
+    <label>
+      <input type="checkbox" id="closeStream">
+      Close stream after all messages (call subject.complete)
+    </label>
+  </div>
+
+  <button class="primary" id="runBtn" onclick="runTest()">Run Test</button>
+
+  <div id="log"></div>
+  <div id="result"></div>
+
+  <script>
+    const msgRowsEl = document.getElementById("msgRows");
+    const logEl = document.getElementById("log");
+    const resultEl = document.getElementById("result");
+    const runBtn = document.getElementById("runBtn");
+
+    let messages = [
+      { size: 250, delay: 0 },
+      { size: 1, delay: 0 },
+    ];
+
+    function renderRows() {
+      msgRowsEl.innerHTML = "";
+      messages.forEach((msg, i) => {
+        const row = document.createElement("div");
+        row.className = "msg-row";
+        row.innerHTML = `
+          <span class="index">${i + 1}</span>
+          <label>Size (KB)</label>
+          <input type="number" value="${msg.size}" min="1" max="2000" onchange="messages[${i}].size=+this.value">
+          <label>Delay (ms)</label>
+          <input type="number" value="${msg.delay}" min="0" max="5000" onchange="messages[${i}].delay=+this.value">
+          ${messages.length > 1 ? `<button class="remove" onclick="removeRow(${i})">remove</button>` : ""}
+        `;
+        msgRowsEl.appendChild(row);
+      });
+    }
+
+    function addRow() {
+      messages.push({ size: 1, delay: 0 });
+      renderRows();
+    }
+
+    function removeRow(i) {
+      messages.splice(i, 1);
+      renderRows();
+    }
+
+    function loadPreset(name) {
+      const presets = {
+        "repro": [{ size: 250, delay: 0 }, { size: 1, delay: 0 }],
+        "reverse": [{ size: 1, delay: 0 }, { size: 250, delay: 0 }],
+        "sandwich": [{ size: 1, delay: 0 }, { size: 250, delay: 0 }, { size: 1, delay: 0 }],
+        "multi-small": [{ size: 250, delay: 0 }, { size: 1, delay: 0 }, { size: 1, delay: 0 }, { size: 1, delay: 0 }],
+        "two-large": [{ size: 250, delay: 0 }, { size: 250, delay: 0 }, { size: 1, delay: 0 }],
+      };
+      messages = presets[name].map((m) => ({ ...m }));
+      renderRows();
+    }
+
+    function log(text, cls = "ev-info") {
+      const time = new Date().toISOString().split("T")[1].replace("Z", "");
+      logEl.innerHTML += `<span class="${cls}">[${time}] ${text}</span>\n`;
+      logEl.scrollTop = logEl.scrollHeight;
+    }
+
+    function showResult(pass, message) {
+      resultEl.className = `result ${pass ? "pass" : "fail"}`;
+      resultEl.textContent = message;
+    }
+
+    function runTest() {
+      logEl.innerHTML = "";
+      resultEl.className = "";
+      resultEl.textContent = "";
+      runBtn.disabled = true;
+
+      const sizes = messages.map((m) => m.size).join(",");
+      const delays = messages.map((m) => m.delay).join(",");
+      const close = document.getElementById("closeStream").checked;
+
+      const received = new Set();
+      let doneReceived = false;
+      let expectedTotal = messages.length;
+
+      const url = `/stream-multi?sizes=${sizes}&delays=${delays}&close=${close}`;
+      log(`Opening EventSource: ${url}`);
+      log(`Expecting ${expectedTotal} messages: [${sizes}] KB`);
+      log(`Close stream after: ${close}`);
+      log("");
+
+      const es = new EventSource(url);
+
+      es.addEventListener("msg", (e) => {
+        const data = JSON.parse(e.data);
+        const i = data.index;
+        const sizeKb = messages[i]?.size || "?";
+        const actualKb = (e.data.length / 1024).toFixed(1);
+        received.add(i);
+        log(`MSG #${i + 1}  — configured: ${sizeKb} KB, actual payload: ${actualKb} KB`, "ev-msg");
+      });
+
+      es.addEventListener("done", (e) => {
+        doneReceived = true;
+        const data = JSON.parse(e.data);
+        log(`DONE — server emitted all ${data.totalSent} messages + done sentinel`, "ev-done");
+        if (close) {
+          // Stream will close, wait for it
+        } else {
+          // Stream stays open, we have our answer
+          es.close();
+          finish();
+        }
+      });
+
+      es.addEventListener("error", (e) => {
+        const me = e;
+        if (me.data) {
+          log(`ERROR (server) — ${me.data}`, "ev-error");
+        } else {
+          log(`CONNECTION ERROR — readyState: ${es.readyState}`, "ev-error");
+          es.close();
+          finish();
+        }
+      });
+
+      let finished = false;
+      function finish() {
+        if (finished) return;
+        finished = true;
+        runBtn.disabled = false;
+
+        log("");
+        log("--- Summary ---");
+        for (let i = 0; i < expectedTotal; i++) {
+          const got = received.has(i);
+          const sizeKb = messages[i]?.size || "?";
+          log(`  msg #${i + 1} (${sizeKb} KB):  ${got ? "received" : "MISSING"}`, got ? "ev-msg" : "ev-error");
+        }
+        log(`  done sentinel: ${doneReceived ? "received" : "MISSING"}`, doneReceived ? "ev-done" : "ev-error");
+
+        const allReceived = received.size === expectedTotal && doneReceived;
+        const missingMsgs = [];
+        for (let i = 0; i < expectedTotal; i++) {
+          if (!received.has(i)) missingMsgs.push(`#${i + 1} (${messages[i]?.size}KB)`);
+        }
+
+        if (allReceived) {
+          showResult(true, "PASS — All messages and done sentinel received.");
+        } else if (received.size === expectedTotal && !doneReceived) {
+          showResult(false, "FAIL — All sized messages received, but 'done' sentinel was lost. Close race issue (Scenario A).");
+        } else {
+          showResult(false, `FAIL — Missing messages: ${missingMsgs.join(", ")}${!doneReceived ? " + done sentinel" : ""}. Messages dropped mid-stream (Scenario B — buffering issue).`);
+        }
+      }
+
+      setTimeout(() => {
+        if (!finished) {
+          log("TIMEOUT — no completion after 30s", "ev-error");
+          es.close();
+          finish();
+        }
+      }, 30000);
+    }
+
+    // Initial render
+    renderRows();
+  </script>
+</body>
+</html>
